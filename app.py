@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import timedelta
 from typing import List
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -58,10 +59,16 @@ def run_due_jobs_from_cron() -> list[str]:
     settings = get_settings()
     if not settings["enabled"]:
         return []
-    now_hhmm = now_kst().strftime("%H:%M")
+    now = now_kst().replace(second=0, microsecond=0)
+    grace_minutes = int(os.environ.get("CRON_GRACE_MINUTES", "5"))
     executed = []
     for hhmm in settings["times"]:
-        if hhmm == now_hhmm:
+        hour, minute = [int(x) for x in hhmm.split(":")]
+        candidate = now.replace(hour=hour, minute=minute)
+        if candidate > now:
+            candidate -= timedelta(days=1)
+        diff_seconds = (now - candidate).total_seconds()
+        if 0 <= diff_seconds <= grace_minutes * 60:
             execute_schedule(hhmm, False)
             executed.append(hhmm)
     return executed
