@@ -2,11 +2,15 @@ import os
 import threading
 from typing import List
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from band_core import (
     APP_NAME,
+    KST,
     api,
+    add_log,
     build_lines,
     dashboard_status,
     execute_schedule,
@@ -17,8 +21,55 @@ from band_core import (
     normalize_settings,
     now_kst,
     save_settings,
-    add_log,
 )
+
+scheduler = BackgroundScheduler(timezone=KST)
+scheduler_lock = threading.Lock()
+
+
+def reload_scheduler_jobs() -> None:
+    with scheduler_lock:
+        if not scheduler.running:
+            scheduler.start()
+        scheduler.remove_all_jobs()
+        settings = get_settings()
+        if not settings["enabled"]:
+            add_log("INFO", "Web 스케줄러 정지 상태 적용")
+            return
+        if not settings["band_key"]:
+            add_log("ERROR", "Web 스케줄러 시작 실패: 밴드가 선택되어 있지 않습니다.")
+            return
+        for hhmm in settings["times"]:
+            hour, minute = [int(x) for x in hhmm.split(":")]
+            scheduler.add_job(
+                execute_schedule,
+                CronTrigger(hour=hour, minute=minute, timezone=KST),
+                args=[hhmm, False],
+                id=f"band_post_{hhmm}",
+                replace_existing=True,
+                max_instances=1,
+                misfire_grace_time=300,
+                coalesce=True,
+            )
+        add_log("INFO", f"Web 스케줄러 적용 완료: {', '.join(settings['times'])}")
+
+
+def web_status() -> dict:
+    status = dashboard_status()
+    jobs = []
+    if scheduler.running:
+        for job in scheduler.get_jobs():
+            jobs.append(
+                {
+                    "id": job.id,
+                    "next_run_time": job.next_run_time.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S") if job.next_run_time else "-",
+                }
+            )
+    if jobs:
+        status["jobs"] = jobs
+    status["worker_state"] = "Free Web Service 내부 스케줄러"
+    status["worker_alive"] = scheduler.running
+    return status
 
 
 def create_app() -> Flask:
@@ -74,7 +125,7 @@ def create_app() -> Flask:
             "index.html",
             app_name=APP_NAME,
             settings=settings,
-            status=dashboard_status(),
+            status=web_status(),
             bands=bands,
             band_error=band_error,
             preview_lines=preview_lines,
@@ -89,7 +140,8 @@ def create_app() -> Flask:
             current = get_settings()
             data = form_to_settings(request.form, enabled=current["enabled"])
             saved = save_settings(data)
-            flash("설정이 저장되었습니다. Worker가 저장된 값을 읽어 다음 예약부터 반영합니다.", "success")
+            reload_scheduler_jobs()
+            flash("설정이 저장되었습니다. 실행 중이면 다음 예약부터 새 설정이 반영됩니다.", "success")
             add_log("INFO", f"설정 저장: {saved['band_name'] or '밴드 미선택'} / {', '.join(saved['times'])}")
         except Exception as exc:
             flash(str(exc), "error")
@@ -105,8 +157,9 @@ def create_app() -> Flask:
             build_lines(settings)
             settings["enabled"] = True
             save_settings(settings)
-            flash("예약 실행을 시작 상태로 변경했습니다. 실제 실행은 Background Worker가 담당합니다.", "success")
-            add_log("INFO", "예약 시작 상태 저장")
+            reload_scheduler_jobs()
+            flash("예약 실행을 시작했습니다. 무료 사용 시 외부 Ping으로 Web Service를 깨워두는 설정이 필요합니다.", "success")
+            add_log("INFO", "예약 시작")
         except Exception as exc:
             flash(str(exc), "error")
             add_log("ERROR", f"예약 시작 실패: {exc}")
@@ -117,8 +170,9 @@ def create_app() -> Flask:
         settings = get_settings()
         settings["enabled"] = False
         save_settings(settings)
+        reload_scheduler_jobs()
         flash("예약 실행을 정지했습니다. 설정값은 그대로 보관됩니다.", "success")
-        add_log("INFO", "예약 정지 상태 저장")
+        add_log("INFO", "예약 정지")
         return redirect(url_for("index"))
 
     @app.route("/run-now", methods=["POST"])
@@ -129,7 +183,7 @@ def create_app() -> Flask:
 
     @app.route("/api/status")
     def api_status():
-        return jsonify(dashboard_status())
+        return web_status()
 
     @app.route("/api/preview", methods=["POST"])
     def api_preview():
@@ -138,18 +192,25 @@ def create_app() -> Flask:
             settings = form_to_settings(request.form, enabled=current["enabled"])
             normalized = normalize_settings(settings)
             lines = build_lines(normalized)[:120]
-            return jsonify({"ok": True, "lines": lines, "count": len(lines)})
+            return {"ok": True, "lines": lines, "count": len(lines)}
         except Exception as exc:
-            return jsonify({"ok": False, "error": str(exc), "lines": [], "count": 0}), 400
+            return {"ok": False, "error": str(exc), "lines": [], "count": 0}, 400
 
     @app.route("/healthz")
     def healthz():
-        return jsonify({"ok": True, "time": now_kst().isoformat()})
+        return {"ok": True, "time": now_kst().isoformat()}
 
     return app
 
 
 init_db()
+try:
+    reload_scheduler_jobs()
+except Exception as exc:
+    try:
+        add_log("ERROR", f"부팅 중 Web 스케줄러 적용 실패: {exc}")
+    except Exception:
+        pass
 app = create_app()
 
 if __name__ == "__main__":
