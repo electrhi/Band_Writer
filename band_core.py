@@ -3,10 +3,14 @@ import os
 import re
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import requests
+try:
+    import holidays as pyholidays
+except Exception:  # Render build 전/패키지 누락 시에도 앱이 부팅되도록 방어
+    pyholidays = None
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text, UniqueConstraint, create_engine, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -77,6 +81,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "retry_interval_seconds": 20,
     "retry_limit": 0,
     "do_push": False,
+    "skip_saturday": False,
+    "skip_korean_holidays": False,
+    "skip_extra_dates": False,
+    "extra_skip_dates": [],
 }
 
 
@@ -196,6 +204,23 @@ def normalize_order(value: Any) -> str:
     return "asc" if str(value).lower() == "asc" else "desc"
 
 
+def parse_date_list(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        candidates = raw
+    else:
+        candidates = re.split(r"[,\n\s]+", str(raw or ""))
+    result: List[str] = []
+    for item in candidates:
+        value = str(item).strip()
+        if not value:
+            continue
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+            raise ValueError(f"제외일 날짜 형식이 올바르지 않습니다: {value} (예: 2026-08-17)")
+        datetime.strptime(value, "%Y-%m-%d")
+        result.append(value)
+    return sorted(set(result))
+
+
 def normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(DEFAULT_SETTINGS)
     merged.update(data or {})
@@ -226,6 +251,10 @@ def normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         "retry_interval_seconds": parse_int(merged.get("retry_interval_seconds", 20), "실패 후 재시도 대기초", 1, 3600),
         "retry_limit": parse_int(merged.get("retry_limit", 0), "재시도 제한", 0, 100),
         "do_push": bool(merged.get("do_push")),
+        "skip_saturday": bool(merged.get("skip_saturday")),
+        "skip_korean_holidays": bool(merged.get("skip_korean_holidays")),
+        "skip_extra_dates": bool(merged.get("skip_extra_dates")),
+        "extra_skip_dates": parse_date_list(merged.get("extra_skip_dates", [])),
     }
 
 
@@ -253,6 +282,10 @@ def form_to_settings(form: Any, enabled: bool) -> Dict[str, Any]:
         "retry_interval_seconds": form.get("retry_interval_seconds", 20),
         "retry_limit": form.get("retry_limit", 0),
         "do_push": form.get("do_push") == "on" or form.get("do_push") is True,
+        "skip_saturday": form.get("skip_saturday") == "on" or form.get("skip_saturday") is True,
+        "skip_korean_holidays": form.get("skip_korean_holidays") == "on" or form.get("skip_korean_holidays") is True,
+        "skip_extra_dates": form.get("skip_extra_dates") == "on" or form.get("skip_extra_dates") is True,
+        "extra_skip_dates": form.get("extra_skip_dates", ""),
     }
 
 
@@ -301,6 +334,32 @@ def build_lines(settings: Dict[str, Any], base_dt: Optional[datetime] = None) ->
     for template in settings["tail_templates"]:
         lines.append(render_line(template, {"date": date_text, "zone": "", "team": "", "type": "TBM"}))
     return [line for line in lines if line]
+
+
+def korean_holiday_name(base_dt: datetime) -> str:
+    if pyholidays is None:
+        return ""
+    try:
+        kr_holidays = pyholidays.country_holidays("KR", years=[base_dt.year])
+        value = kr_holidays.get(base_dt.date())
+        return str(value or "")
+    except Exception as exc:
+        add_log("WARNING", f"공휴일 판정 실패: {exc}")
+        return ""
+
+
+def get_skip_reason(settings: Dict[str, Any], base_dt: Optional[datetime] = None) -> str:
+    base_dt = base_dt or now_kst()
+    date_key = base_dt.strftime("%Y-%m-%d")
+    if settings.get("skip_saturday") and base_dt.weekday() == 5:
+        return "토요일 제외 설정"
+    if settings.get("skip_extra_dates") and date_key in settings.get("extra_skip_dates", []):
+        return f"수동 제외일/임시공휴일 설정: {date_key}"
+    if settings.get("skip_korean_holidays"):
+        name = korean_holiday_name(base_dt)
+        if name:
+            return f"대한민국 공휴일 제외 설정: {name}"
+    return ""
 
 
 def acquire_run(run_key: str) -> bool:
@@ -354,6 +413,11 @@ def execute_schedule(scheduled_hhmm: str, manual: bool = False) -> None:
         add_log("WARNING", f"중복 실행 방지로 건너뜀: {run_key}")
         return
     try:
+        skip_reason = get_skip_reason(settings, base_dt)
+        if skip_reason and not manual:
+            update_run(run_key, "SKIPPED", skip_reason)
+            add_log("INFO", f"예약 실행 건너뜀: {scheduled_hhmm} / {skip_reason}")
+            return
         lines = build_lines(settings, base_dt)
         if not lines:
             raise RuntimeError("생성된 게시글이 없습니다. 조 수 또는 템플릿을 확인하세요.")
@@ -375,6 +439,10 @@ def next_run_estimates(settings: Dict[str, Any]) -> List[Dict[str, str]]:
         hour, minute = [int(x) for x in hhmm.split(":")]
         candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate <= now:
+            candidate += timedelta(days=1)
+        for _ in range(370):
+            if not get_skip_reason(settings, candidate):
+                break
             candidate += timedelta(days=1)
         estimates.append({"id": f"expected_{hhmm}", "next_run_time": candidate.strftime("%Y-%m-%d %H:%M:%S")})
     return sorted(estimates, key=lambda item: item["next_run_time"])
@@ -399,6 +467,7 @@ def dashboard_status() -> Dict[str, Any]:
     worker_jobs = runtime.get("worker_jobs", {}).get("value", []) if runtime.get("worker_jobs") else []
     if not isinstance(worker_jobs, list):
         worker_jobs = []
+    today_skip_reason = get_skip_reason(settings)
     return {
         "app": APP_NAME,
         "now": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
@@ -407,6 +476,7 @@ def dashboard_status() -> Dict[str, Any]:
         "enabled": settings["enabled"],
         "jobs": worker_jobs if worker_jobs else next_run_estimates(settings),
         "last_run": get_last_run(),
+        "today_skip_reason": today_skip_reason,
         "worker_heartbeat": heartbeat_value,
         "worker_heartbeat_age": heartbeat_age,
         "worker_alive": worker_alive,
