@@ -4,7 +4,7 @@ from typing import List
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, flash, redirect, render_template, request, session, url_for
 
 from band_core import (
     APP_NAME,
@@ -54,6 +54,19 @@ def reload_scheduler_jobs() -> None:
         add_log("INFO", f"Web 스케줄러 적용 완료: {', '.join(settings['times'])}")
 
 
+def run_due_jobs_from_cron() -> list[str]:
+    settings = get_settings()
+    if not settings["enabled"]:
+        return []
+    now_hhmm = now_kst().strftime("%H:%M")
+    executed = []
+    for hhmm in settings["times"]:
+        if hhmm == now_hhmm:
+            execute_schedule(hhmm, False)
+            executed.append(hhmm)
+    return executed
+
+
 def web_status() -> dict:
     status = dashboard_status()
     jobs = []
@@ -67,7 +80,7 @@ def web_status() -> dict:
             )
     if jobs:
         status["jobs"] = jobs
-    status["worker_state"] = "Free Web Service 내부 스케줄러"
+    status["worker_state"] = "Free Web Service 내부 스케줄러 + Supabase Cron Wake"
     status["worker_alive"] = scheduler.running
     return status
 
@@ -79,7 +92,7 @@ def create_app() -> Flask:
     @app.before_request
     def require_login():
         admin_password = os.environ.get("ADMIN_PASSWORD", "").strip()
-        if request.endpoint in {"login", "healthz", "static"}:
+        if request.endpoint in {"login", "healthz", "static", "supabase_cron"}:
             return None
         if admin_password and not session.get("logged_in"):
             return redirect(url_for("login"))
@@ -158,7 +171,7 @@ def create_app() -> Flask:
             settings["enabled"] = True
             save_settings(settings)
             reload_scheduler_jobs()
-            flash("예약 실행을 시작했습니다. 무료 사용 시 외부 Ping으로 Web Service를 깨워두는 설정이 필요합니다.", "success")
+            flash("예약 실행을 시작했습니다. Supabase Cron을 연결하면 별도 Ping 없이 예약 시간에 깨워집니다.", "success")
             add_log("INFO", "예약 시작")
         except Exception as exc:
             flash(str(exc), "error")
@@ -195,6 +208,15 @@ def create_app() -> Flask:
             return {"ok": True, "lines": lines, "count": len(lines)}
         except Exception as exc:
             return {"ok": False, "error": str(exc), "lines": [], "count": 0}, 400
+
+    @app.route("/api/supabase-cron", methods=["GET", "POST"])
+    def supabase_cron():
+        expected = os.environ.get("CRON_SECRET", "").strip()
+        supplied = request.headers.get("X-Cron-Secret", "") or request.args.get("secret", "")
+        if expected and supplied != expected:
+            return {"ok": False, "error": "unauthorized"}, 401
+        executed = run_due_jobs_from_cron()
+        return {"ok": True, "time": now_kst().isoformat(), "executed": executed}
 
     @app.route("/healthz")
     def healthz():
