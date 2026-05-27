@@ -4,3 +4,4 @@ gunicorn==22.0.0
 APScheduler==3.10.4
 SQLAlchemy==2.0.32
 psycopg2-binary==2.9.9
+holidays==0.61
