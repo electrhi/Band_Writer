@@ -17,20 +17,44 @@ from sqlalchemy.exc import IntegrityError
 KST = ZoneInfo("Asia/Seoul")
 APP_NAME = "Band Auto Writer"
 
+
 def database_url() -> str:
     url = os.environ.get("DATABASE_URL", "sqlite:///band_writer.db")
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
     return url
 
+
 DATABASE_URL = database_url()
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True, connect_args=connect_args)
 metadata = MetaData()
 
-settings_table = Table("settings", metadata, Column("id", Integer, primary_key=True), Column("data", Text, nullable=False), Column("updated_at", DateTime(timezone=True), nullable=False))
-logs_table = Table("logs", metadata, Column("id", Integer, primary_key=True, autoincrement=True), Column("level", String(20), nullable=False), Column("message", Text, nullable=False), Column("created_at", DateTime(timezone=True), nullable=False))
-run_history_table = Table("run_history", metadata, Column("id", Integer, primary_key=True, autoincrement=True), Column("run_key", String(180), nullable=False), Column("status", String(30), nullable=False), Column("detail", Text), Column("created_at", DateTime(timezone=True), nullable=False), UniqueConstraint("run_key", name="uq_run_history_run_key"))
+settings_table = Table(
+    "settings",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("data", Text, nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+logs_table = Table(
+    "logs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("level", String(20), nullable=False),
+    Column("message", Text, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+run_history_table = Table(
+    "run_history",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_key", String(180), nullable=False),
+    Column("status", String(30), nullable=False),
+    Column("detail", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("run_key", name="uq_run_history_run_key"),
+)
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "enabled": False,
@@ -54,6 +78,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
 
 scheduler = BackgroundScheduler(timezone=KST)
 scheduler_lock = threading.Lock()
+
 
 class BandOpenApi:
     def __init__(self) -> None:
@@ -86,16 +111,20 @@ class BandOpenApi:
             params["do_push"] = "true"
         return self._api_call("/v2.2/band/post/create", params=params, method="post")
 
+
 api = BandOpenApi()
+
 
 def now_kst() -> datetime:
     return datetime.now(tz=KST)
+
 
 def init_db() -> None:
     metadata.create_all(engine)
     with engine.begin() as conn:
         if conn.execute(select(settings_table.c.id).where(settings_table.c.id == 1)).first() is None:
             conn.execute(insert(settings_table).values(id=1, data=json.dumps(DEFAULT_SETTINGS, ensure_ascii=False), updated_at=now_kst()))
+
 
 def add_log(level: str, message: str) -> None:
     with engine.begin() as conn:
@@ -104,10 +133,12 @@ def add_log(level: str, message: str) -> None:
         if old_ids:
             conn.execute(logs_table.delete().where(logs_table.c.id.in_(old_ids)))
 
+
 def get_logs(limit: int = 80) -> List[dict]:
     with engine.begin() as conn:
         rows = conn.execute(select(logs_table).order_by(logs_table.c.id.desc()).limit(limit)).mappings().all()
     return [dict(r) for r in rows]
+
 
 def normalize_hhmm(raw: str) -> str:
     raw = raw.strip()
@@ -118,12 +149,14 @@ def normalize_hhmm(raw: str) -> str:
         raise ValueError(f"시간 범위가 올바르지 않습니다: {raw}")
     return f"{hour:02d}:{minute:02d}"
 
+
 def parse_times(raw: Any) -> List[str]:
     candidates = raw if isinstance(raw, list) else str(raw or "").replace("\n", ",").split(",")
     times = [normalize_hhmm(str(x)) for x in candidates if str(x).strip()]
     if not times:
         raise ValueError("글 작성 시간을 1개 이상 입력하세요.")
     return sorted(set(times))
+
 
 def parse_int(value: Any, name: str, minimum: int = 0, maximum: int = 999) -> int:
     try:
@@ -134,8 +167,10 @@ def parse_int(value: Any, name: str, minimum: int = 0, maximum: int = 999) -> in
         raise ValueError(f"{name}은 {minimum}~{maximum} 사이로 입력하세요.")
     return parsed
 
+
 def normalize_order(value: Any) -> str:
     return "asc" if str(value).lower() == "asc" else "desc"
+
 
 def normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(DEFAULT_SETTINGS)
@@ -155,7 +190,7 @@ def normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         "band_key": str(merged.get("band_key", "")).strip(),
         "band_name": str(merged.get("band_name", "")).strip(),
         "dcu_count": parse_int(merged.get("dcu_count", 0), "DCU 조 수", 0),
-        "modem_counts": [parse_int(v, f"{i+1}권역 모뎀 조 수", 0) for i, v in enumerate(modem_counts)],
+        "modem_counts": [parse_int(v, f"{i + 1}권역 모뎀 조 수", 0) for i, v in enumerate(modem_counts)],
         "date_format": str(merged.get("date_format") or DEFAULT_SETTINGS["date_format"]).strip(),
         "modem_template": str(merged.get("modem_template") or DEFAULT_SETTINGS["modem_template"]).strip(),
         "dcu_template": str(merged.get("dcu_template") or DEFAULT_SETTINGS["dcu_template"]).strip(),
@@ -168,6 +203,34 @@ def normalize_settings(data: Dict[str, Any]) -> Dict[str, Any]:
         "retry_limit": parse_int(merged.get("retry_limit", 0), "재시도 제한", 0, 100),
         "do_push": bool(merged.get("do_push")),
     }
+
+
+def form_to_settings(form: Any, enabled: bool) -> Dict[str, Any]:
+    band_value = form.get("band_key", "").strip()
+    band_key, band_name = band_value, form.get("band_name", "").strip()
+    if "|" in band_value:
+        band_key, band_name_from_value = band_value.split("|", 1)
+        band_name = band_name or band_name_from_value
+    return {
+        "enabled": enabled,
+        "times": form.get("times", ""),
+        "band_key": band_key,
+        "band_name": band_name,
+        "dcu_count": form.get("dcu_count", 0),
+        "modem_counts": [form.get(f"modem_{i}", 0) for i in range(1, 5)],
+        "date_format": form.get("date_format", DEFAULT_SETTINGS["date_format"]),
+        "modem_template": form.get("modem_template", DEFAULT_SETTINGS["modem_template"]),
+        "dcu_template": form.get("dcu_template", DEFAULT_SETTINGS["dcu_template"]),
+        "tail_templates": form.get("tail_templates", ""),
+        "modem_zone_order": form.get("modem_zone_order", "desc"),
+        "modem_team_order": form.get("modem_team_order", "desc"),
+        "dcu_team_order": form.get("dcu_team_order", "desc"),
+        "post_interval_seconds": form.get("post_interval_seconds", 10),
+        "retry_interval_seconds": form.get("retry_interval_seconds", 20),
+        "retry_limit": form.get("retry_limit", 0),
+        "do_push": form.get("do_push") == "on" or form.get("do_push") is True,
+    }
+
 
 def get_settings() -> Dict[str, Any]:
     with engine.begin() as conn:
@@ -182,21 +245,25 @@ def get_settings() -> Dict[str, Any]:
             add_log("ERROR", "저장된 설정 JSON을 읽을 수 없어 기본값으로 대체했습니다.")
     return normalize_settings(data)
 
+
 def save_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = normalize_settings(data)
     with engine.begin() as conn:
         conn.execute(update(settings_table).where(settings_table.c.id == 1).values(data=json.dumps(normalized, ensure_ascii=False), updated_at=now_kst()))
     return normalized
 
+
 def build_sequence(max_count: int, order: str) -> List[int]:
     seq = list(range(1, max_count + 1))
     return seq if order == "asc" else list(reversed(seq))
+
 
 def render_line(template: str, context: Dict[str, Any]) -> str:
     try:
         return template.format(**context).strip()
     except KeyError as exc:
         raise ValueError(f"템플릿 변수 오류: {exc}. 사용 가능 변수는 {{date}}, {{zone}}, {{team}}, {{type}} 입니다.") from exc
+
 
 def build_lines(settings: Dict[str, Any], base_dt: Optional[datetime] = None) -> List[str]:
     base_dt = base_dt or now_kst()
@@ -211,6 +278,7 @@ def build_lines(settings: Dict[str, Any], base_dt: Optional[datetime] = None) ->
         lines.append(render_line(template, {"date": date_text, "zone": "", "team": "", "type": "TBM"}))
     return [line for line in lines if line]
 
+
 def acquire_run(run_key: str) -> bool:
     try:
         with engine.begin() as conn:
@@ -219,14 +287,17 @@ def acquire_run(run_key: str) -> bool:
     except IntegrityError:
         return False
 
+
 def update_run(run_key: str, status: str, detail: str = "") -> None:
     with engine.begin() as conn:
         conn.execute(update(run_history_table).where(run_history_table.c.run_key == run_key).values(status=status, detail=detail))
+
 
 def get_last_run() -> Optional[dict]:
     with engine.begin() as conn:
         row = conn.execute(select(run_history_table).order_by(run_history_table.c.id.desc()).limit(1)).mappings().first()
     return dict(row) if row else None
+
 
 def post_lines(settings: Dict[str, Any], lines: List[str]) -> None:
     if not settings["band_key"]:
@@ -248,12 +319,13 @@ def post_lines(settings: Dict[str, Any], lines: List[str]) -> None:
                     raise
                 time.sleep(settings["retry_interval_seconds"])
 
+
 def execute_schedule(scheduled_hhmm: str, manual: bool = False) -> None:
     settings = get_settings()
     if not manual and not settings["enabled"]:
         return
     base_dt = now_kst()
-    run_key = f"{'manual' if manual else 'schedule'}:{base_dt.strftime('%Y%m%d')}:{scheduled_hhmm}:{settings.get('band_key','')}"
+    run_key = f"{'manual' if manual else 'schedule'}:{base_dt.strftime('%Y%m%d')}:{scheduled_hhmm}:{settings.get('band_key', '')}"
     if not acquire_run(run_key):
         add_log("WARNING", f"중복 실행 방지로 건너뜀: {run_key}")
         return
@@ -269,6 +341,7 @@ def execute_schedule(scheduled_hhmm: str, manual: bool = False) -> None:
         update_run(run_key, "FAILED", str(exc))
         add_log("ERROR", f"실행 실패: {scheduled_hhmm} / {exc}")
 
+
 def reload_scheduler_jobs() -> None:
     with scheduler_lock:
         if not scheduler.running:
@@ -280,8 +353,18 @@ def reload_scheduler_jobs() -> None:
             return
         for hhmm in settings["times"]:
             hour, minute = [int(x) for x in hhmm.split(":")]
-            scheduler.add_job(execute_schedule, CronTrigger(hour=hour, minute=minute, timezone=KST), args=[hhmm, False], id=f"band_post_{hhmm}", replace_existing=True, max_instances=1, misfire_grace_time=300, coalesce=True)
+            scheduler.add_job(
+                execute_schedule,
+                CronTrigger(hour=hour, minute=minute, timezone=KST),
+                args=[hhmm, False],
+                id=f"band_post_{hhmm}",
+                replace_existing=True,
+                max_instances=1,
+                misfire_grace_time=300,
+                coalesce=True,
+            )
         add_log("INFO", f"스케줄러 적용 완료: {', '.join(settings['times'])}")
+
 
 def scheduler_status() -> Dict[str, Any]:
     jobs = scheduler.get_jobs() if scheduler.running else []
@@ -292,9 +375,16 @@ def scheduler_status() -> Dict[str, Any]:
         "token_ready": api.is_ready,
         "db": "PostgreSQL" if DATABASE_URL.startswith("postgresql") else "SQLite/local",
         "enabled": settings["enabled"],
-        "jobs": [{"id": job.id, "next_run_time": job.next_run_time.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S") if job.next_run_time else "-"} for job in jobs],
+        "jobs": [
+            {
+                "id": job.id,
+                "next_run_time": job.next_run_time.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S") if job.next_run_time else "-",
+            }
+            for job in jobs
+        ],
         "last_run": get_last_run(),
     }
+
 
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -345,44 +435,48 @@ def create_app() -> Flask:
         except Exception as exc:
             preview_lines = []
             preview_error = str(exc)
-        return render_template("index.html", app_name=APP_NAME, settings=settings, status=scheduler_status(), bands=bands, band_error=band_error, preview_lines=preview_lines, preview_error=preview_error, logs=get_logs(), admin_password_enabled=bool(os.environ.get("ADMIN_PASSWORD", "").strip()))
+        return render_template(
+            "index.html",
+            app_name=APP_NAME,
+            settings=settings,
+            status=scheduler_status(),
+            bands=bands,
+            band_error=band_error,
+            preview_lines=preview_lines,
+            preview_error=preview_error,
+            logs=get_logs(),
+            admin_password_enabled=bool(os.environ.get("ADMIN_PASSWORD", "").strip()),
+        )
 
     @app.route("/settings", methods=["POST"])
     def update_settings_route():
         try:
-            band_value = request.form.get("band_key", "").strip()
-            band_key, band_name = band_value, request.form.get("band_name", "").strip()
-            if "|" in band_value:
-                band_key, band_name_from_value = band_value.split("|", 1)
-                band_name = band_name or band_name_from_value
-            data = {
-                "enabled": True,
-                "times": request.form.get("times", ""),
-                "band_key": band_key,
-                "band_name": band_name,
-                "dcu_count": request.form.get("dcu_count", 0),
-                "modem_counts": [request.form.get(f"modem_{i}", 0) for i in range(1, 5)],
-                "date_format": request.form.get("date_format", DEFAULT_SETTINGS["date_format"]),
-                "modem_template": request.form.get("modem_template", DEFAULT_SETTINGS["modem_template"]),
-                "dcu_template": request.form.get("dcu_template", DEFAULT_SETTINGS["dcu_template"]),
-                "tail_templates": request.form.get("tail_templates", ""),
-                "modem_zone_order": request.form.get("modem_zone_order", "desc"),
-                "modem_team_order": request.form.get("modem_team_order", "desc"),
-                "dcu_team_order": request.form.get("dcu_team_order", "desc"),
-                "post_interval_seconds": request.form.get("post_interval_seconds", 10),
-                "retry_interval_seconds": request.form.get("retry_interval_seconds", 20),
-                "retry_limit": request.form.get("retry_limit", 0),
-                "do_push": request.form.get("do_push") == "on",
-            }
-            if not data["band_key"]:
-                raise ValueError("밴드를 선택하세요.")
+            current = get_settings()
+            data = form_to_settings(request.form, enabled=current["enabled"])
             saved = save_settings(data)
             reload_scheduler_jobs()
-            flash("설정이 저장되었습니다. 기존 설정은 새 설정으로 덮어쓰기 되었습니다.", "success")
-            add_log("INFO", f"설정 저장: {saved['band_name']} / {', '.join(saved['times'])}")
+            flash("설정이 저장되었습니다. 미리보기와 다음 실행 설정이 새 값으로 변경되었습니다.", "success")
+            add_log("INFO", f"설정 저장: {saved['band_name'] or '밴드 미선택'} / {', '.join(saved['times'])}")
         except Exception as exc:
             flash(str(exc), "error")
             add_log("ERROR", f"설정 저장 실패: {exc}")
+        return redirect(url_for("index"))
+
+    @app.route("/start", methods=["POST"])
+    def start():
+        try:
+            settings = get_settings()
+            if not settings["band_key"]:
+                raise ValueError("시작 전에 밴드를 선택하고 설정 저장을 먼저 해주세요.")
+            build_lines(settings)
+            settings["enabled"] = True
+            save_settings(settings)
+            reload_scheduler_jobs()
+            flash("스케줄러를 시작했습니다. 저장된 설정 기준으로 동작합니다.", "success")
+            add_log("INFO", "스케줄러 시작")
+        except Exception as exc:
+            flash(str(exc), "error")
+            add_log("ERROR", f"스케줄러 시작 실패: {exc}")
         return redirect(url_for("index"))
 
     @app.route("/stop", methods=["POST"])
@@ -391,7 +485,8 @@ def create_app() -> Flask:
         settings["enabled"] = False
         save_settings(settings)
         reload_scheduler_jobs()
-        flash("스케줄러를 정지했습니다.", "success")
+        flash("스케줄러를 정지했습니다. 설정값은 그대로 보관됩니다.", "success")
+        add_log("INFO", "스케줄러 정지")
         return redirect(url_for("index"))
 
     @app.route("/run-now", methods=["POST"])
@@ -404,11 +499,23 @@ def create_app() -> Flask:
     def api_status():
         return jsonify(scheduler_status())
 
+    @app.route("/api/preview", methods=["POST"])
+    def api_preview():
+        try:
+            current = get_settings()
+            settings = form_to_settings(request.form, enabled=current["enabled"])
+            normalized = normalize_settings(settings)
+            lines = build_lines(normalized)[:120]
+            return jsonify({"ok": True, "lines": lines, "count": len(lines)})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc), "lines": [], "count": 0}), 400
+
     @app.route("/healthz")
     def healthz():
         return jsonify({"ok": True, "time": now_kst().isoformat()})
 
     return app
+
 
 init_db()
 try:
