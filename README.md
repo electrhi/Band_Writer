@@ -27,7 +27,9 @@ Background Worker
 - 현재 설정 상태, Worker 상태, 다음 실행 시간, 최근 실행 결과, 로그 표시
 - 글 형식 템플릿 자유 변경
 - 중복 실행 방지용 실행 이력 저장
-- BAND 토큰은 코드에 저장하지 않고 환경변수로 관리
+- 로그인은 Supabase Auth 이메일/비밀번호 계정으로 관리
+- BAND 토큰은 계정별 설정값으로 저장
+- 조별 인원 이름을 저장하고 `{members}` 템플릿 변수로 게시글에 표시
 
 ## 파일 구성
 
@@ -49,12 +51,13 @@ templates/
 - `{zone}`: 권역 번호
 - `{team}`: 조 번호
 - `{type}`: 모뎀 / DCU / TBM 등 구분용
+- `{members}`: 해당 조에 편성된 인원 이름 (`김철수/김영희` 형식)
 
 예시:
 
 ```text
-{date} {zone}권역 모뎀{team}조
-{date} DCU {team}조
+{date} 모뎀 {team}조 {members}
+{date} DCU {team}조 {members}
 {date} TBM
 ```
 
@@ -64,19 +67,18 @@ templates/
 
 1. Render Dashboard → New → Blueprint
 2. GitHub 저장소 `electrhi/Band_Writer` 선택
-3. `render.yaml`을 인식하면 아래 3개 리소스가 생성됩니다.
+3. `render.yaml`을 인식하면 아래 2개 리소스가 생성됩니다.
    - `band-auto-writer-web`
    - `band-auto-writer-worker`
-   - `band-auto-writer-db`
-4. 환경변수에 아래 값을 넣습니다.
+4. Supabase 프로젝트에서 Auth를 준비하고, Render 환경변수에 아래 값을 넣습니다.
 
 | Key | 대상 | 설명 |
 |---|---|---|
-| `BAND_ACCESS_TOKEN` | Web, Worker | BAND 개발자센터에서 새로 발급한 토큰 |
-| `ADMIN_PASSWORD` | Web | 웹 관리자 화면 접속 비밀번호 |
+| `SUPABASE_URL` | Web | Supabase 프로젝트 URL |
+| `SUPABASE_ANON_KEY` | Web | Supabase anon 또는 publishable key |
 | `SECRET_KEY` | Web | 임의의 긴 랜덤 문자열 |
 | `TZ` | Web, Worker | `Asia/Seoul` |
-| `DATABASE_URL` | Web, Worker | 같은 DB 연결 문자열 |
+| `DATABASE_URL` | Web, Worker | Render PostgreSQL `band-auto-writer-db` 연결 문자열 |
 
 ### 2. 수동으로 생성하는 방법
 
@@ -96,22 +98,23 @@ templates/
 | Build Command | `pip install -r requirements.txt` |
 | Start Command | `python worker.py` |
 
-Web Service와 Background Worker의 `DATABASE_URL`은 반드시 같아야 합니다.
+Web Service와 Background Worker의 `DATABASE_URL`은 반드시 같은 Render PostgreSQL 연결 문자열이어야 합니다. Blueprint 배포 시 `band-auto-writer-db`에서 자동 연결됩니다.
 
 ## 사용 방법
 
 1. 웹 주소 접속
-2. 관리자 비밀번호 입력
-3. 밴드 선택
-4. 시간, 조 수, 글 형식 입력
-5. 미리보기 확인
-6. `설정 저장`
-7. `시작`
-8. 상단 상태에서 Worker가 정상인지 확인
+2. Supabase 계정으로 로그인 또는 회원가입
+3. BAND Access Token 저장
+4. 밴드 선택
+5. 시간, 조 수, 조원 이름, 글 형식 입력
+6. 미리보기 확인
+7. `설정 저장`
+8. `시작`
+9. 상단 상태에서 Worker가 정상인지 확인
 
 ## 중요 운영 메모
 
 - Free Web Service는 유휴 상태에서 잠들 수 있으므로 예약 실행을 맡기면 안 됩니다.
 - 예약 실행은 `worker.py`가 담당합니다.
-- Render Free Postgres는 30일 제한이 있으므로 장기 운영은 Supabase/Neon 같은 외부 무료 PostgreSQL을 권장합니다.
-- `BAND_ACCESS_TOKEN`은 절대 GitHub에 올리지 마세요. 이미 노출된 토큰은 BAND 개발자센터에서 폐기/재발급하는 것을 권장합니다.
+- 계정 관리는 Supabase Auth가 담당하고, 계정별 설정과 BAND 토큰은 Render PostgreSQL에 Supabase 사용자 ID로 연결되어 저장됩니다.
+- `BAND_ACCESS_TOKEN`은 절대 GitHub에 올리지 마세요. 현재 버전은 웹 화면에서 계정별 BAND Access Token을 저장합니다. 이미 노출된 토큰은 BAND 개발자센터에서 폐기/재발급하는 것을 권장합니다.

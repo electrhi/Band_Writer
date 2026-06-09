@@ -12,6 +12,7 @@ from band_core import (
     api,
     dashboard_status,
     execute_schedule,
+    get_all_enabled_settings,
     get_settings,
     init_db,
     now_kst,
@@ -30,8 +31,10 @@ def settings_signature(settings: Dict) -> str:
             "enabled": settings.get("enabled"),
             "times": settings.get("times"),
             "band_key": settings.get("band_key"),
+            "band_access_token": bool(settings.get("band_access_token")),
             "dcu_count": settings.get("dcu_count"),
             "modem_counts": settings.get("modem_counts"),
+            "team_members": settings.get("team_members"),
             "date_format": settings.get("date_format"),
             "modem_template": settings.get("modem_template"),
             "dcu_template": settings.get("dcu_template"),
@@ -60,31 +63,57 @@ def publish_jobs_status() -> None:
 
 def reload_jobs_if_needed(force: bool = False) -> None:
     global last_signature
-    settings = get_settings()
-    signature = settings_signature(settings)
+    settings_list = get_all_enabled_settings()
+    signature = repr([settings_signature(settings) + ":" + str(settings.get("user_id")) for settings in settings_list])
     if not force and signature == last_signature:
         return
     with scheduler_lock:
         scheduler.remove_all_jobs()
-        if settings["enabled"]:
-            if not settings["band_key"]:
-                add_log("ERROR", "Worker 예약 시작 실패: 밴드가 선택되어 있지 않습니다.")
-            else:
+        if settings_list:
+            applied = []
+            for settings in settings_list:
+                user_id = settings.get("user_id")
+                label = user_id or "default"
+                if not settings["band_key"]:
+                    add_log("ERROR", "Worker 예약 시작 실패: 밴드가 선택되어 있지 않습니다.", user_id)
+                    continue
                 for hhmm in settings["times"]:
                     hour, minute = [int(x) for x in hhmm.split(":")]
                     scheduler.add_job(
                         execute_schedule,
                         CronTrigger(hour=hour, minute=minute, timezone=KST),
-                        args=[hhmm, False],
-                        id=f"band_post_{hhmm}",
+                        args=[hhmm, False, user_id],
+                        id=f"band_post_{label}_{hhmm}",
                         replace_existing=True,
                         max_instances=1,
                         misfire_grace_time=300,
                         coalesce=True,
                     )
-                add_log("INFO", f"Worker 예약 적용: {', '.join(settings['times'])}")
+                applied.append(f"{label}: {', '.join(settings['times'])}")
+            if applied:
+                add_log("INFO", f"Worker 예약 적용: {' / '.join(applied)}")
         else:
-            add_log("INFO", "Worker 예약 정지 상태 확인")
+            legacy_settings = get_settings()
+            if legacy_settings["enabled"]:
+                settings = legacy_settings
+                if not settings["band_key"]:
+                    add_log("ERROR", "Worker 예약 시작 실패: 밴드가 선택되어 있지 않습니다.")
+                else:
+                    for hhmm in settings["times"]:
+                        hour, minute = [int(x) for x in hhmm.split(":")]
+                        scheduler.add_job(
+                            execute_schedule,
+                            CronTrigger(hour=hour, minute=minute, timezone=KST),
+                            args=[hhmm, False, None],
+                            id=f"band_post_{hhmm}",
+                            replace_existing=True,
+                            max_instances=1,
+                            misfire_grace_time=300,
+                            coalesce=True,
+                        )
+                    add_log("INFO", f"Worker 예약 적용: {', '.join(settings['times'])}")
+            else:
+                add_log("INFO", "Worker 예약 정지 상태 확인")
         last_signature = signature
         set_runtime("worker_last_reload", now_kst().isoformat())
         publish_jobs_status()
@@ -118,7 +147,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_stop)
     signal.signal(signal.SIGINT, handle_stop)
     set_runtime("worker_state", "부팅 중")
-    add_log("INFO", f"Worker 부팅: token={'OK' if api.is_ready else 'MISSING'}")
+    add_log("INFO", f"Worker 부팅: token={'OK' if api.is_ready() else 'MISSING'}")
     scheduler.start()
     reload_jobs_if_needed(force=True)
     threading.Thread(target=heartbeat_loop, daemon=True).start()

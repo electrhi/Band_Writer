@@ -19,11 +19,14 @@
     </section>
     <form class="card" method="post">
       <h2>{{ app_name }}</h2>
-      <p>관리자 비밀번호를 입력하세요.</p>
+      <p>Supabase 계정으로 로그인하세요.</p>
       {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
-      <div class="field"><label for="password">관리자 비밀번호</label><input id="password" name="password" type="password" placeholder="비밀번호 입력" autofocus required></div>
-      <button type="submit">로그인</button>
-      <div class="hint">공용 PC에서는 사용 후 로그아웃하세요.</div>
+      {% if not supabase_configured %}<div class="flash">SUPABASE_URL과 SUPABASE_ANON_KEY 환경변수를 먼저 설정하세요.</div>{% endif %}
+      <div class="field"><label for="email">아이디(이메일)</label><input id="email" name="email" type="email" placeholder="name@example.com" autofocus required></div>
+      <div class="field"><label for="password">비밀번호</label><input id="password" name="password" type="password" placeholder="비밀번호 입력" required></div>
+      <button type="submit" name="action" value="login">로그인</button>
+      <button type="submit" name="action" value="signup" style="margin-top:10px;background:#f1f5f9;color:#334155;box-shadow:none">회원가입</button>
+      <div class="hint">계정과 BAND 토큰, 조 편성은 Supabase 사용자 ID 기준으로 분리 저장됩니다.</div>
     </form>
   </main>
 </body>

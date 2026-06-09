@@ -16,6 +16,7 @@ from band_core import (
     dashboard_status,
     execute_schedule,
     form_to_settings,
+    get_all_enabled_settings,
     get_logs,
     get_settings,
     init_db,
@@ -23,6 +24,7 @@ from band_core import (
     now_kst,
     save_settings,
 )
+from supabase_auth import SupabaseAuthError, sign_in, sign_up, supabase_configured
 
 scheduler = BackgroundScheduler(timezone=KST)
 scheduler_lock = threading.Lock()
@@ -33,52 +35,61 @@ def reload_scheduler_jobs() -> None:
         if not scheduler.running:
             scheduler.start()
         scheduler.remove_all_jobs()
-        settings = get_settings()
-        if not settings["enabled"]:
+        enabled_settings = get_all_enabled_settings()
+        if not enabled_settings:
             add_log("INFO", "Web 스케줄러 정지 상태 적용")
             return
-        if not settings["band_key"]:
-            add_log("ERROR", "Web 스케줄러 시작 실패: 밴드가 선택되어 있지 않습니다.")
-            return
-        for hhmm in settings["times"]:
-            hour, minute = [int(x) for x in hhmm.split(":")]
-            scheduler.add_job(
-                execute_schedule,
-                CronTrigger(hour=hour, minute=minute, timezone=KST),
-                args=[hhmm, False],
-                id=f"band_post_{hhmm}",
-                replace_existing=True,
-                max_instances=1,
-                misfire_grace_time=300,
-                coalesce=True,
-            )
-        add_log("INFO", f"Web 스케줄러 적용 완료: {', '.join(settings['times'])}")
+        applied = []
+        for settings in enabled_settings:
+            user_id = settings.get("user_id")
+            if not settings["band_key"]:
+                add_log("ERROR", "Web 스케줄러 시작 실패: 밴드가 선택되어 있지 않습니다.", user_id)
+                continue
+            for hhmm in settings["times"]:
+                hour, minute = [int(x) for x in hhmm.split(":")]
+                scheduler.add_job(
+                    execute_schedule,
+                    CronTrigger(hour=hour, minute=minute, timezone=KST),
+                    args=[hhmm, False, user_id],
+                    id=f"band_post_{user_id or 'default'}_{hhmm}",
+                    replace_existing=True,
+                    max_instances=1,
+                    misfire_grace_time=300,
+                    coalesce=True,
+                )
+            applied.append(f"{user_id or 'default'}: {', '.join(settings['times'])}")
+        add_log("INFO", f"Web 스케줄러 적용 완료: {' / '.join(applied)}")
 
 
 def run_due_jobs_from_cron() -> list[str]:
-    settings = get_settings()
-    if not settings["enabled"]:
-        return []
     now = now_kst().replace(second=0, microsecond=0)
     grace_minutes = int(os.environ.get("CRON_GRACE_MINUTES", "5"))
     executed = []
-    for hhmm in settings["times"]:
-        hour, minute = [int(x) for x in hhmm.split(":")]
-        candidate = now.replace(hour=hour, minute=minute)
-        if candidate > now:
-            candidate -= timedelta(days=1)
-        diff_seconds = (now - candidate).total_seconds()
-        if 0 <= diff_seconds <= grace_minutes * 60:
-            execute_schedule(hhmm, False)
-            executed.append(hhmm)
+    for settings in get_all_enabled_settings():
+        user_id = settings.get("user_id")
+        for hhmm in settings["times"]:
+            hour, minute = [int(x) for x in hhmm.split(":")]
+            candidate = now.replace(hour=hour, minute=minute)
+            if candidate > now:
+                candidate -= timedelta(days=1)
+            diff_seconds = (now - candidate).total_seconds()
+            if 0 <= diff_seconds <= grace_minutes * 60:
+                execute_schedule(hhmm, False, user_id)
+                executed.append(f"{user_id or 'default'}:{hhmm}")
     return executed
 
 
-def web_status() -> dict:
-    status = dashboard_status()
+def current_user_id() -> str:
+    return str(session.get("user_id") or "")
+
+
+def web_status(user_id: str = "") -> dict:
+    status = dashboard_status(user_id or None)
     jobs = []
     if scheduler.running:
         for job in scheduler.get_jobs():
+            if user_id and f"_{user_id}_" not in job.id:
+                continue
             jobs.append(
                 {
                     "id": job.id,
@@ -98,25 +109,33 @@ def create_app() -> Flask:
 
     @app.before_request
     def require_login():
-        admin_password = os.environ.get("ADMIN_PASSWORD", "").strip()
         if request.endpoint in {"login", "healthz", "static", "supabase_cron"}:
             return None
-        if admin_password and not session.get("logged_in"):
+        if not session.get("user_id"):
             return redirect(url_for("login"))
         return None
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
-        admin_password = os.environ.get("ADMIN_PASSWORD", "").strip()
-        if not admin_password:
-            session["logged_in"] = True
-            return redirect(url_for("index"))
         if request.method == "POST":
-            if request.form.get("password", "") == admin_password:
+            email = request.form.get("email", "").strip()
+            password = request.form.get("password", "")
+            action = request.form.get("action", "login")
+            try:
+                data = sign_up(email, password) if action == "signup" else sign_in(email, password)
+                user = data.get("user") or {}
+                if action == "signup" and not data.get("session"):
+                    session.clear()
+                    flash("회원가입이 접수되었습니다. Supabase 이메일 확인 설정이 켜져 있으면 메일 인증 후 로그인하세요.", "success")
+                    return redirect(url_for("login"))
+                session.clear()
+                session["user_id"] = user["id"]
+                session["user_email"] = user.get("email") or email
                 session["logged_in"] = True
                 return redirect(url_for("index"))
-            flash("비밀번호가 맞지 않습니다.", "error")
-        return render_template("login.html", app_name=APP_NAME)
+            except SupabaseAuthError as exc:
+                flash(str(exc), "error")
+        return render_template("login.html", app_name=APP_NAME, supabase_configured=supabase_configured())
 
     @app.route("/logout", methods=["POST"])
     def logout():
@@ -125,16 +144,17 @@ def create_app() -> Flask:
 
     @app.route("/")
     def index():
-        settings = get_settings()
+        user_id = current_user_id()
+        settings = get_settings(user_id)
         bands: List[dict] = []
         band_error = ""
-        if api.is_ready:
+        if api.is_ready(settings):
             try:
-                bands = api.get_bands()
+                bands = api.get_bands(api.token_from_settings(settings))
             except Exception as exc:
                 band_error = str(exc)
         else:
-            band_error = "BAND_ACCESS_TOKEN 환경변수가 설정되어 있지 않습니다."
+            band_error = "계정 설정에 BAND Access Token을 저장하세요."
         try:
             preview_lines = build_lines(settings)[:80]
             preview_error = ""
@@ -145,70 +165,76 @@ def create_app() -> Flask:
             "index.html",
             app_name=APP_NAME,
             settings=settings,
-            status=web_status(),
+            status=web_status(user_id),
             bands=bands,
             band_error=band_error,
             preview_lines=preview_lines,
             preview_error=preview_error,
-            logs=get_logs(),
-            admin_password_enabled=bool(os.environ.get("ADMIN_PASSWORD", "").strip()),
+            logs=get_logs(user_id=user_id),
+            admin_password_enabled=True,
+            user_email=session.get("user_email", ""),
         )
 
     @app.route("/settings", methods=["POST"])
     def update_settings_route():
         try:
-            current = get_settings()
+            user_id = current_user_id()
+            current = get_settings(user_id)
             data = form_to_settings(request.form, enabled=current["enabled"])
-            saved = save_settings(data)
+            saved = save_settings(data, user_id)
             reload_scheduler_jobs()
             flash("설정이 저장되었습니다. 실행 중이면 다음 예약부터 새 설정이 반영됩니다.", "success")
-            add_log("INFO", f"설정 저장: {saved['band_name'] or '밴드 미선택'} / {', '.join(saved['times'])}")
+            add_log("INFO", f"설정 저장: {saved['band_name'] or '밴드 미선택'} / {', '.join(saved['times'])}", user_id)
         except Exception as exc:
             flash(str(exc), "error")
-            add_log("ERROR", f"설정 저장 실패: {exc}")
+            add_log("ERROR", f"설정 저장 실패: {exc}", current_user_id() or None)
         return redirect(url_for("index"))
 
     @app.route("/start", methods=["POST"])
     def start():
         try:
-            settings = get_settings()
+            user_id = current_user_id()
+            settings = get_settings(user_id)
             if not settings["band_key"]:
                 raise ValueError("시작 전에 밴드를 선택하고 설정 저장을 먼저 해주세요.")
+            if not api.token_from_settings(settings):
+                raise ValueError("시작 전에 BAND Access Token을 저장하세요.")
             build_lines(settings)
             settings["enabled"] = True
-            save_settings(settings)
+            save_settings(settings, user_id)
             reload_scheduler_jobs()
             flash("예약 실행을 시작했습니다. Supabase Cron을 연결하면 별도 Ping 없이 예약 시간에 깨워집니다.", "success")
-            add_log("INFO", "예약 시작")
+            add_log("INFO", "예약 시작", user_id)
         except Exception as exc:
             flash(str(exc), "error")
-            add_log("ERROR", f"예약 시작 실패: {exc}")
+            add_log("ERROR", f"예약 시작 실패: {exc}", current_user_id() or None)
         return redirect(url_for("index"))
 
     @app.route("/stop", methods=["POST"])
     def stop():
-        settings = get_settings()
+        user_id = current_user_id()
+        settings = get_settings(user_id)
         settings["enabled"] = False
-        save_settings(settings)
+        save_settings(settings, user_id)
         reload_scheduler_jobs()
         flash("예약 실행을 정지했습니다. 설정값은 그대로 보관됩니다.", "success")
-        add_log("INFO", "예약 정지")
+        add_log("INFO", "예약 정지", user_id)
         return redirect(url_for("index"))
 
     @app.route("/run-now", methods=["POST"])
     def run_now():
-        threading.Thread(target=execute_schedule, args=(now_kst().strftime("%H:%M:%S"), True), daemon=True).start()
+        threading.Thread(target=execute_schedule, args=(now_kst().strftime("%H:%M:%S"), True, current_user_id()), daemon=True).start()
         flash("즉시 실행을 시작했습니다. 진행 상황은 로그에서 확인하세요.", "success")
         return redirect(url_for("index"))
 
     @app.route("/api/status")
     def api_status():
-        return web_status()
+        return web_status(current_user_id())
 
     @app.route("/api/preview", methods=["POST"])
     def api_preview():
         try:
-            current = get_settings()
+            current = get_settings(current_user_id())
             settings = form_to_settings(request.form, enabled=current["enabled"])
             normalized = normalize_settings(settings)
             lines = build_lines(normalized)[:120]
