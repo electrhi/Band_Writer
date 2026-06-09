@@ -35,7 +35,7 @@ def _engine():
         _database_url(),
         future=True,
         pool_pre_ping=True,
-        connect_args={"ssl_context": ssl.create_default_context()},
+        connect_args={"ssl_context": ssl._create_unverified_context()},
     )
 
 
