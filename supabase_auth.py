@@ -17,7 +17,9 @@ def supabase_configured() -> bool:
 def _database_url() -> str:
     url = os.environ.get("SUPABASE_DATABASE_URL", "").strip()
     if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
+        url = url.replace("postgres://", "postgresql+pg8000://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+pg8000://", 1)
     if not url:
         raise SupabaseAuthError("SUPABASE_DATABASE_URL 환경변수를 설정하세요.")
     parsed = urlsplit(url)

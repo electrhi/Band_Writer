@@ -26,7 +26,9 @@ def prefixed(name: str) -> str:
 def database_url() -> str:
     url = os.environ.get("DATABASE_URL", "sqlite:///band_writer.db")
     if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
+        url = url.replace("postgres://", "postgresql+pg8000://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+pg8000://", 1)
     return url
 
 
