@@ -1,4 +1,5 @@
 import os
+import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from typing import Any, Dict
 
@@ -24,13 +25,18 @@ def _database_url() -> str:
         raise SupabaseAuthError("SUPABASE_DATABASE_URL 환경변수를 설정하세요.")
     parsed = urlsplit(url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query.setdefault("sslmode", "require")
+    query.pop("sslmode", None)
     url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
     return url
 
 
 def _engine():
-    return create_engine(_database_url(), future=True, pool_pre_ping=True)
+    return create_engine(
+        _database_url(),
+        future=True,
+        pool_pre_ping=True,
+        connect_args={"ssl_context": ssl.create_default_context()},
+    )
 
 
 def _password_matches(raw_password: str, stored_password: str, stored_hash: str) -> bool:
