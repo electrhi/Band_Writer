@@ -1,5 +1,4 @@
 import os
-import threading
 from datetime import timedelta
 from typing import List
 
@@ -232,8 +231,7 @@ def create_app() -> Flask:
 
     @app.route("/run-now", methods=["POST"])
     def run_now():
-        threading.Thread(target=execute_schedule, args=(now_kst().strftime("%H:%M:%S"), True, current_user_id()), daemon=True).start()
-        flash("즉시 실행을 시작했습니다. 진행 상황은 로그에서 확인하세요.", "success")
+        flash("즉시 실행은 비활성화되어 있습니다. 게시글은 설정된 예약 시간에만 작성됩니다.", "error")
         return redirect(url_for("index"))
 
     @app.route("/api/status")
