@@ -14,7 +14,7 @@ services:
         generateValue: true
       - key: SUPABASE_URL
         value: https://blbmdnygvoqyrovvlrrh.supabase.co
-      - key: SUPABASE_DATABASE_URL
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: DATABASE_URL
         fromDatabase:

@@ -75,7 +75,7 @@ templates/
 | Key | 대상 | 설명 |
 |---|---|---|
 | `SUPABASE_URL` | Web | `https://blbmdnygvoqyrovvlrrh.supabase.co` |
-| `SUPABASE_DATABASE_URL` | Web | `public.work_users` 조회용 Supabase Postgres 연결 문자열 |
+| `SUPABASE_SERVICE_ROLE_KEY` | Web | `public.work_users`와 BAND 토큰 설정 조회/저장용 Supabase service role 또는 secret key |
 | `SECRET_KEY` | Web | 임의의 긴 랜덤 문자열 |
 | `TZ` | Web, Worker | `Asia/Seoul` |
 | `DATABASE_URL` | Web, Worker | Render PostgreSQL `band-auto-writer-db` 연결 문자열 |
@@ -116,5 +116,5 @@ Web Service와 Background Worker의 `DATABASE_URL`은 반드시 같은 Render Po
 
 - Free Web Service는 유휴 상태에서 잠들 수 있으므로 예약 실행을 맡기면 안 됩니다.
 - 예약 실행은 `worker.py`가 담당합니다.
-- 계정 관리는 Supabase `public.work_users` 테이블이 담당하고, 계정별 설정과 BAND 토큰은 Render PostgreSQL에 `work_users.id`로 연결되어 저장됩니다.
+- 계정 관리는 Supabase `public.work_users` 테이블이 담당하고, 계정별 BAND 토큰은 Supabase `public.band_writer_user_settings` 테이블에 `work_users.id`로 연결되어 저장됩니다. 예약 시간, 조편성, 템플릿, 로그는 Render PostgreSQL에 저장됩니다.
 - `BAND_ACCESS_TOKEN`은 절대 GitHub에 올리지 마세요. 현재 버전은 웹 화면에서 계정별 BAND Access Token을 저장합니다. 이미 노출된 토큰은 BAND 개발자센터에서 폐기/재발급하는 것을 권장합니다.

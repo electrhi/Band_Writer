@@ -1,9 +1,8 @@
 import os
-import ssl
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from typing import Any, Dict
+from datetime import datetime, timezone
+from typing import Any, Dict, List
 
-from sqlalchemy import create_engine, text
+import requests
 from werkzeug.security import check_password_hash
 
 
@@ -12,31 +11,57 @@ class SupabaseAuthError(RuntimeError):
 
 
 def supabase_configured() -> bool:
-    return bool(os.environ.get("SUPABASE_DATABASE_URL", "").strip())
+    return bool(
+        os.environ.get("SUPABASE_URL", "").strip()
+        and os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    )
 
 
-def _database_url() -> str:
-    url = os.environ.get("SUPABASE_DATABASE_URL", "").strip()
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql+pg8000://", 1)
-    elif url.startswith("postgresql://"):
-        url = url.replace("postgresql://", "postgresql+pg8000://", 1)
+def _supabase_url() -> str:
+    url = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
     if not url:
-        raise SupabaseAuthError("SUPABASE_DATABASE_URL 환경변수를 설정하세요.")
-    parsed = urlsplit(url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query.pop("sslmode", None)
-    url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+        raise SupabaseAuthError("SUPABASE_URL 환경변수를 설정하세요.")
     return url
 
 
-def _engine():
-    return create_engine(
-        _database_url(),
-        future=True,
-        pool_pre_ping=True,
-        connect_args={"ssl_context": ssl._create_unverified_context()},
+def _service_key() -> str:
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    if not key:
+        raise SupabaseAuthError("SUPABASE_SERVICE_ROLE_KEY 환경변수를 설정하세요.")
+    return key
+
+
+def _headers(extra: Dict[str, str] | None = None) -> Dict[str, str]:
+    key = _service_key()
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    headers.update(extra or {})
+    return headers
+
+
+def _rest_request(method: str, table: str, *, params: Dict[str, str] | None = None, json_body: Any = None, headers: Dict[str, str] | None = None) -> Any:
+    response = requests.request(
+        method,
+        f"{_supabase_url()}/rest/v1/{table}",
+        params=params or {},
+        json=json_body,
+        headers=_headers(headers),
+        timeout=20,
     )
+    if response.ok:
+        if not response.text:
+            return None
+        return response.json()
+    try:
+        detail = response.json()
+    except Exception:
+        detail = {"message": response.text}
+    message = detail.get("message") or detail.get("hint") or detail.get("details") or str(detail)
+    raise SupabaseAuthError(f"Supabase REST API 오류: {response.status_code} {message}")
 
 
 def _password_matches(raw_password: str, stored_password: str, stored_hash: str) -> bool:
@@ -55,24 +80,21 @@ def sign_in(login_id: str, password: str) -> Dict[str, Any]:
     login_id = login_id.strip()
     if not login_id or not password:
         raise SupabaseAuthError("아이디와 비밀번호를 입력하세요.")
-    with _engine().begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                select id, login_id, password, password_hash, display_name, role,
-                       is_active, team_no, region_no, worker_type
-                from public.work_users
-                where login_id = :login_id
-                limit 1
-                """
-            ),
-            {"login_id": login_id},
-        ).mappings().first()
+    rows: List[Dict[str, Any]] = _rest_request(
+        "GET",
+        "work_users",
+        params={
+            "select": "id,login_id,password,password_hash,display_name,role,is_active,team_no,region_no,worker_type",
+            "login_id": f"eq.{login_id}",
+            "limit": "1",
+        },
+    )
+    row = rows[0] if rows else None
     if row is None:
         raise SupabaseAuthError("아이디 또는 비밀번호가 맞지 않습니다.")
     if not row["is_active"]:
         raise SupabaseAuthError("비활성화된 계정입니다.")
-    if not _password_matches(password, row["password"], row["password_hash"] or ""):
+    if not _password_matches(password, row.get("password", ""), row.get("password_hash", "")):
         raise SupabaseAuthError("아이디 또는 비밀번호가 맞지 않습니다.")
     return {
         "user": {
@@ -90,34 +112,30 @@ def sign_in(login_id: str, password: str) -> Dict[str, Any]:
 def get_band_access_token(user_id: str) -> str:
     if not user_id:
         return ""
-    with _engine().begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                select band_access_token
-                from public.band_writer_user_settings
-                where user_id = cast(:user_id as uuid)
-                limit 1
-                """
-            ),
-            {"user_id": user_id},
-        ).mappings().first()
-    return str(row["band_access_token"] or "").strip() if row else ""
+    rows: List[Dict[str, Any]] = _rest_request(
+        "GET",
+        "band_writer_user_settings",
+        params={
+            "select": "band_access_token",
+            "user_id": f"eq.{user_id}",
+            "limit": "1",
+        },
+    )
+    row = rows[0] if rows else None
+    return str(row.get("band_access_token") or "").strip() if row else ""
 
 
 def save_band_access_token(user_id: str, access_token: str) -> None:
     if not user_id:
         raise SupabaseAuthError("로그인 정보가 없습니다.")
-    with _engine().begin() as conn:
-        conn.execute(
-            text(
-                """
-                insert into public.band_writer_user_settings (user_id, band_access_token, updated_at)
-                values (cast(:user_id as uuid), :access_token, now())
-                on conflict (user_id)
-                do update set band_access_token = excluded.band_access_token,
-                              updated_at = now()
-                """
-            ),
-            {"user_id": user_id, "access_token": access_token.strip()},
-        )
+    _rest_request(
+        "POST",
+        "band_writer_user_settings",
+        params={"on_conflict": "user_id"},
+        json_body={
+            "user_id": user_id,
+            "band_access_token": access_token.strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        headers={"Prefer": "resolution=merge-duplicates"},
+    )
