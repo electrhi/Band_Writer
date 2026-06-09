@@ -27,7 +27,7 @@ Background Worker
 - 현재 설정 상태, Worker 상태, 다음 실행 시간, 최근 실행 결과, 로그 표시
 - 글 형식 템플릿 자유 변경
 - 중복 실행 방지용 실행 이력 저장
-- 로그인은 Supabase Auth 이메일/비밀번호 계정으로 관리
+- 로그인은 Supabase `public.work_users` 테이블의 아이디/비밀번호로 관리
 - BAND 토큰은 계정별 설정값으로 저장
 - 조별 인원 이름을 저장하고 `{members}` 템플릿 변수로 게시글에 표시
 
@@ -70,12 +70,12 @@ templates/
 3. `render.yaml`을 인식하면 아래 2개 리소스가 생성됩니다.
    - `band-auto-writer-web`
    - `band-auto-writer-worker`
-4. Supabase 프로젝트에서 Auth를 준비하고, Render 환경변수에 아래 값을 넣습니다.
+4. Supabase 프로젝트의 `public.work_users` 테이블 계정을 준비하고, Render 환경변수에 아래 값을 넣습니다.
 
 | Key | 대상 | 설명 |
 |---|---|---|
-| `SUPABASE_URL` | Web | Supabase 프로젝트 URL |
-| `SUPABASE_ANON_KEY` | Web | Supabase anon 또는 publishable key |
+| `SUPABASE_URL` | Web | `https://blbmdnygvoqyrovvlrrh.supabase.co` |
+| `SUPABASE_DATABASE_URL` | Web | `public.work_users` 조회용 Supabase Postgres 연결 문자열 |
 | `SECRET_KEY` | Web | 임의의 긴 랜덤 문자열 |
 | `TZ` | Web, Worker | `Asia/Seoul` |
 | `DATABASE_URL` | Web, Worker | Render PostgreSQL `band-auto-writer-db` 연결 문자열 |
@@ -103,7 +103,7 @@ Web Service와 Background Worker의 `DATABASE_URL`은 반드시 같은 Render Po
 ## 사용 방법
 
 1. 웹 주소 접속
-2. Supabase 계정으로 로그인 또는 회원가입
+2. Supabase `work_users` 테이블의 아이디/비밀번호로 로그인
 3. BAND Access Token 저장
 4. 밴드 선택
 5. 시간, 조 수, 조원 이름, 글 형식 입력
@@ -116,5 +116,5 @@ Web Service와 Background Worker의 `DATABASE_URL`은 반드시 같은 Render Po
 
 - Free Web Service는 유휴 상태에서 잠들 수 있으므로 예약 실행을 맡기면 안 됩니다.
 - 예약 실행은 `worker.py`가 담당합니다.
-- 계정 관리는 Supabase Auth가 담당하고, 계정별 설정과 BAND 토큰은 Render PostgreSQL에 Supabase 사용자 ID로 연결되어 저장됩니다.
+- 계정 관리는 Supabase `public.work_users` 테이블이 담당하고, 계정별 설정과 BAND 토큰은 Render PostgreSQL에 `work_users.id`로 연결되어 저장됩니다.
 - `BAND_ACCESS_TOKEN`은 절대 GitHub에 올리지 마세요. 현재 버전은 웹 화면에서 계정별 BAND Access Token을 저장합니다. 이미 노출된 토큰은 BAND 개발자센터에서 폐기/재발급하는 것을 권장합니다.

@@ -19,14 +19,13 @@
     </section>
     <form class="card" method="post">
       <h2>{{ app_name }}</h2>
-      <p>Supabase 계정으로 로그인하세요.</p>
+      <p>Supabase work_users 계정으로 로그인하세요.</p>
       {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
-      {% if not supabase_configured %}<div class="flash">SUPABASE_URL과 SUPABASE_ANON_KEY 환경변수를 먼저 설정하세요.</div>{% endif %}
-      <div class="field"><label for="email">아이디(이메일)</label><input id="email" name="email" type="email" placeholder="name@example.com" autofocus required></div>
+      {% if not supabase_configured %}<div class="flash">SUPABASE_DATABASE_URL 환경변수를 먼저 설정하세요.</div>{% endif %}
+      <div class="field"><label for="login_id">아이디</label><input id="login_id" name="login_id" type="text" placeholder="아이디 입력" autofocus required></div>
       <div class="field"><label for="password">비밀번호</label><input id="password" name="password" type="password" placeholder="비밀번호 입력" required></div>
-      <button type="submit" name="action" value="login">로그인</button>
-      <button type="submit" name="action" value="signup" style="margin-top:10px;background:#f1f5f9;color:#334155;box-shadow:none">회원가입</button>
-      <div class="hint">계정과 BAND 토큰, 조 편성은 Supabase 사용자 ID 기준으로 분리 저장됩니다.</div>
+      <button type="submit">로그인</button>
+      <div class="hint">계정은 Supabase public.work_users 테이블에서 관리합니다.</div>
     </form>
   </main>
 </body>

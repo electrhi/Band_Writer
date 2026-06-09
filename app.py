@@ -24,7 +24,7 @@ from band_core import (
     now_kst,
     save_settings,
 )
-from supabase_auth import SupabaseAuthError, sign_in, sign_up, supabase_configured
+from supabase_auth import SupabaseAuthError, sign_in, supabase_configured
 
 scheduler = BackgroundScheduler(timezone=KST)
 scheduler_lock = threading.Lock()
@@ -118,19 +118,16 @@ def create_app() -> Flask:
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
-            email = request.form.get("email", "").strip()
+            login_id = request.form.get("login_id", "").strip()
             password = request.form.get("password", "")
-            action = request.form.get("action", "login")
             try:
-                data = sign_up(email, password) if action == "signup" else sign_in(email, password)
+                data = sign_in(login_id, password)
                 user = data.get("user") or {}
-                if action == "signup" and not data.get("session"):
-                    session.clear()
-                    flash("회원가입이 접수되었습니다. Supabase 이메일 확인 설정이 켜져 있으면 메일 인증 후 로그인하세요.", "success")
-                    return redirect(url_for("login"))
                 session.clear()
                 session["user_id"] = user["id"]
-                session["user_email"] = user.get("email") or email
+                session["user_login_id"] = user.get("login_id") or login_id
+                session["user_display_name"] = user.get("display_name") or login_id
+                session["user_role"] = user.get("role") or ""
                 session["logged_in"] = True
                 return redirect(url_for("index"))
             except SupabaseAuthError as exc:
@@ -172,7 +169,8 @@ def create_app() -> Flask:
             preview_error=preview_error,
             logs=get_logs(user_id=user_id),
             admin_password_enabled=True,
-            user_email=session.get("user_email", ""),
+            user_email=session.get("user_login_id", ""),
+            user_display_name=session.get("user_display_name", ""),
         )
 
     @app.route("/settings", methods=["POST"])
