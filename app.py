@@ -24,7 +24,7 @@ from band_core import (
     now_kst,
     save_settings,
 )
-from supabase_auth import SupabaseAuthError, sign_in, supabase_configured
+from supabase_auth import SupabaseAuthError, get_band_access_token, save_band_access_token, sign_in, supabase_configured
 
 scheduler = BackgroundScheduler(timezone=KST)
 scheduler_lock = threading.Lock()
@@ -132,6 +132,8 @@ def create_app() -> Flask:
                 return redirect(url_for("index"))
             except SupabaseAuthError as exc:
                 flash(str(exc), "error")
+            except Exception as exc:
+                flash(f"Supabase 계정 DB 연결 오류: {exc}", "error")
         return render_template("login.html", app_name=APP_NAME, supabase_configured=supabase_configured())
 
     @app.route("/logout", methods=["POST"])
@@ -143,6 +145,11 @@ def create_app() -> Flask:
     def index():
         user_id = current_user_id()
         settings = get_settings(user_id)
+        try:
+            settings["band_access_token"] = get_band_access_token(user_id)
+        except Exception as exc:
+            settings["band_access_token"] = ""
+            add_log("ERROR", f"Supabase BAND Access Token 조회 실패: {exc}", user_id)
         bands: List[dict] = []
         band_error = ""
         if api.is_ready(settings):
@@ -179,6 +186,8 @@ def create_app() -> Flask:
             user_id = current_user_id()
             current = get_settings(user_id)
             data = form_to_settings(request.form, enabled=current["enabled"])
+            save_band_access_token(user_id, data.get("band_access_token", ""))
+            data["band_access_token"] = ""
             saved = save_settings(data, user_id)
             reload_scheduler_jobs()
             flash("설정이 저장되었습니다. 실행 중이면 다음 예약부터 새 설정이 반영됩니다.", "success")
@@ -193,12 +202,14 @@ def create_app() -> Flask:
         try:
             user_id = current_user_id()
             settings = get_settings(user_id)
+            settings["band_access_token"] = get_band_access_token(user_id)
             if not settings["band_key"]:
                 raise ValueError("시작 전에 밴드를 선택하고 설정 저장을 먼저 해주세요.")
             if not api.token_from_settings(settings):
                 raise ValueError("시작 전에 BAND Access Token을 저장하세요.")
             build_lines(settings)
             settings["enabled"] = True
+            settings["band_access_token"] = ""
             save_settings(settings, user_id)
             reload_scheduler_jobs()
             flash("예약 실행을 시작했습니다. Supabase Cron을 연결하면 별도 Ping 없이 예약 시간에 깨워집니다.", "success")
@@ -234,6 +245,7 @@ def create_app() -> Flask:
         try:
             current = get_settings(current_user_id())
             settings = form_to_settings(request.form, enabled=current["enabled"])
+            settings["band_access_token"] = ""
             normalized = normalize_settings(settings)
             lines = build_lines(normalized)[:120]
             return {"ok": True, "lines": lines, "count": len(lines)}

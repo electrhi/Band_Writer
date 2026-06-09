@@ -1,4 +1,5 @@
 import os
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from typing import Any, Dict
 
 from sqlalchemy import create_engine, text
@@ -19,6 +20,10 @@ def _database_url() -> str:
         url = url.replace("postgres://", "postgresql://", 1)
     if not url:
         raise SupabaseAuthError("SUPABASE_DATABASE_URL 환경변수를 설정하세요.")
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.setdefault("sslmode", "require")
+    url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
     return url
 
 
@@ -72,3 +77,39 @@ def sign_in(login_id: str, password: str) -> Dict[str, Any]:
             "worker_type": row["worker_type"],
         }
     }
+
+
+def get_band_access_token(user_id: str) -> str:
+    if not user_id:
+        return ""
+    with _engine().begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                select band_access_token
+                from public.band_writer_user_settings
+                where user_id = cast(:user_id as uuid)
+                limit 1
+                """
+            ),
+            {"user_id": user_id},
+        ).mappings().first()
+    return str(row["band_access_token"] or "").strip() if row else ""
+
+
+def save_band_access_token(user_id: str, access_token: str) -> None:
+    if not user_id:
+        raise SupabaseAuthError("로그인 정보가 없습니다.")
+    with _engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                insert into public.band_writer_user_settings (user_id, band_access_token, updated_at)
+                values (cast(:user_id as uuid), :access_token, now())
+                on conflict (user_id)
+                do update set band_access_token = excluded.band_access_token,
+                              updated_at = now()
+                """
+            ),
+            {"user_id": user_id, "access_token": access_token.strip()},
+        )

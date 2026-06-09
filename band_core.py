@@ -329,6 +329,12 @@ def get_last_run(user_id: Optional[str] = None) -> Optional[dict]:
 def post_lines(settings: Dict[str, Any], lines: List[str], user_id: Optional[str] = None) -> None:
     if not settings["band_key"]: raise RuntimeError("밴드가 선택되어 있지 않습니다.")
     access_token = api.token_from_settings(settings)
+    if not access_token and user_id:
+        try:
+            from supabase_auth import get_band_access_token
+            access_token = get_band_access_token(user_id)
+        except Exception as exc:
+            raise RuntimeError(f"Supabase BAND Access Token 조회 실패: {exc}") from exc
     if not access_token: raise RuntimeError("BAND Access Token이 저장되어 있지 않습니다.")
     for index, line in enumerate(lines, start=1):
         attempts = 0
@@ -345,6 +351,15 @@ def post_lines(settings: Dict[str, Any], lines: List[str], user_id: Optional[str
 
 def execute_schedule(scheduled_hhmm: str, manual: bool = False, user_id: Optional[str] = None) -> None:
     settings = get_settings(user_id)
+    if user_id:
+        try:
+            from supabase_auth import get_band_access_token
+            settings["band_access_token"] = get_band_access_token(user_id)
+        except Exception as exc:
+            add_log("ERROR", f"Supabase BAND Access Token 조회 실패: {exc}", user_id)
+            if manual:
+                raise
+            return
     if not manual and not settings["enabled"]: return
     base_dt = now_kst(); run_key = f"{user_id or 'default'}:{'manual' if manual else 'schedule'}:{base_dt.strftime('%Y%m%d')}:{scheduled_hhmm}:{settings.get('band_key', '')}"
     if not acquire_run(run_key, user_id): add_log("WARNING", f"중복 실행 방지로 건너뜀: {run_key}", user_id); return
