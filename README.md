@@ -74,8 +74,8 @@ templates/
 
 | Key | 대상 | 설명 |
 |---|---|---|
-| `SUPABASE_URL` | Web | `https://blbmdnygvoqyrovvlrrh.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Web | `public.work_users`와 BAND 토큰 설정 조회/저장용 Supabase service role 또는 secret key |
+| `SUPABASE_URL` | Web, Worker | `https://blbmdnygvoqyrovvlrrh.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Web, Worker | `public.work_users`와 BAND 토큰 설정 조회/저장용 Supabase service role 또는 secret key |
 | `SECRET_KEY` | Web | 임의의 긴 랜덤 문자열 |
 | `TZ` | Web, Worker | `Asia/Seoul` |
 | `DATABASE_URL` | Web, Worker | Render PostgreSQL `band-auto-writer-db` 연결 문자열 |
