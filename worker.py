@@ -81,7 +81,7 @@ def reload_jobs_if_needed(force: bool = False) -> None:
                     hour, minute = [int(x) for x in hhmm.split(":")]
                     scheduler.add_job(
                         execute_schedule,
-                        CronTrigger(hour=hour, minute=minute, timezone=KST),
+                        CronTrigger(hour=hour, minute=minute, second=0, timezone=KST),
                         args=[hhmm, False, user_id],
                         id=f"band_post_{label}_{hhmm}",
                         replace_existing=True,
@@ -103,7 +103,7 @@ def reload_jobs_if_needed(force: bool = False) -> None:
                         hour, minute = [int(x) for x in hhmm.split(":")]
                         scheduler.add_job(
                             execute_schedule,
-                            CronTrigger(hour=hour, minute=minute, timezone=KST),
+                            CronTrigger(hour=hour, minute=minute, second=0, timezone=KST),
                             args=[hhmm, False, None],
                             id=f"band_post_{hhmm}",
                             replace_existing=True,

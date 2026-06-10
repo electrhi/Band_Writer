@@ -125,6 +125,64 @@ def get_band_access_token(user_id: str) -> str:
     return str(row.get("band_access_token") or "").strip() if row else ""
 
 
+def _settings_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    settings_data = row.get("settings_data")
+    settings = dict(settings_data) if isinstance(settings_data, dict) else {}
+    settings["band_access_token"] = str(row.get("band_access_token") or "").strip()
+    return settings
+
+
+def get_user_settings(user_id: str) -> Dict[str, Any]:
+    if not user_id:
+        return {}
+    rows: List[Dict[str, Any]] = _rest_request(
+        "GET",
+        "band_writer_user_settings",
+        params={
+            "select": "settings_data,band_access_token",
+            "user_id": f"eq.{user_id}",
+            "limit": "1",
+        },
+    )
+    row = rows[0] if rows else None
+    return _settings_from_row(row) if row else {}
+
+
+def get_all_user_settings() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = _rest_request(
+        "GET",
+        "band_writer_user_settings",
+        params={
+            "select": "user_id,settings_data,band_access_token",
+        },
+    )
+    result: List[Dict[str, Any]] = []
+    for row in rows or []:
+        settings = _settings_from_row(row)
+        settings["user_id"] = str(row.get("user_id") or "")
+        result.append(settings)
+    return result
+
+
+def save_user_settings(user_id: str, settings: Dict[str, Any]) -> None:
+    if not user_id:
+        raise SupabaseAuthError("로그인 정보가 없습니다.")
+    settings_data = dict(settings or {})
+    access_token = str(settings_data.pop("band_access_token", "") or "").strip()
+    _rest_request(
+        "POST",
+        "band_writer_user_settings",
+        params={"on_conflict": "user_id"},
+        json_body={
+            "user_id": user_id,
+            "band_access_token": access_token,
+            "settings_data": settings_data,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        headers={"Prefer": "resolution=merge-duplicates"},
+    )
+
+
 def save_band_access_token(user_id: str, access_token: str) -> None:
     if not user_id:
         raise SupabaseAuthError("로그인 정보가 없습니다.")

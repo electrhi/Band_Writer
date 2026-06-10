@@ -275,6 +275,113 @@ def get_all_enabled_settings() -> List[Dict[str, Any]]:
             result.append(settings)
     return result
 
+def supabase_account_settings_enabled() -> bool:
+    return bool(os.environ.get("SUPABASE_URL", "").strip() and os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip())
+
+
+def load_local_settings_data(user_id: Optional[str] = None) -> Dict[str, Any]:
+    with engine.begin() as conn:
+        if user_id:
+            row = conn.execute(select(settings_table.c.data).where(settings_table.c.user_id == user_id)).first()
+            if row is None:
+                conn.execute(insert(settings_table).values(user_id=user_id, data=json.dumps(DEFAULT_SETTINGS, ensure_ascii=False), updated_at=now_kst()))
+                row = conn.execute(select(settings_table.c.data).where(settings_table.c.user_id == user_id)).first()
+        else:
+            row = conn.execute(select(settings_table.c.data).where(settings_table.c.id == 1)).first()
+    data = dict(DEFAULT_SETTINGS)
+    if row:
+        try:
+            saved = json.loads(row[0])
+            if isinstance(saved, dict):
+                data.update(saved)
+        except json.JSONDecodeError:
+            add_log("ERROR", "Saved settings JSON is invalid; using defaults.", user_id)
+    return data
+
+
+def save_local_settings_data(data: Dict[str, Any], user_id: Optional[str] = None) -> None:
+    with engine.begin() as conn:
+        if user_id:
+            result = conn.execute(update(settings_table).where(settings_table.c.user_id == user_id).values(data=json.dumps(data, ensure_ascii=False), updated_at=now_kst()))
+            if result.rowcount == 0:
+                conn.execute(insert(settings_table).values(user_id=user_id, data=json.dumps(data, ensure_ascii=False), updated_at=now_kst()))
+        else:
+            conn.execute(update(settings_table).where(settings_table.c.id == 1).values(data=json.dumps(data, ensure_ascii=False), updated_at=now_kst()))
+
+
+def get_local_settings_rows() -> List[Dict[str, Any]]:
+    with engine.begin() as conn:
+        rows = conn.execute(select(settings_table.c.user_id, settings_table.c.data)).mappings().all()
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            settings = normalize_settings(json.loads(row["data"]))
+        except Exception as exc:
+            add_log("ERROR", f"Saved settings cannot be loaded: {exc}", row.get("user_id"))
+            continue
+        settings["user_id"] = row.get("user_id")
+        result.append(settings)
+    return result
+
+
+def get_settings(user_id: Optional[str] = None) -> Dict[str, Any]:
+    data = load_local_settings_data(user_id)
+    if user_id and supabase_account_settings_enabled():
+        try:
+            from supabase_auth import get_user_settings
+            remote = get_user_settings(user_id)
+            if remote:
+                data.update(remote)
+        except Exception as exc:
+            add_log("ERROR", f"Supabase account settings load failed: {exc}", user_id)
+    return normalize_settings(data)
+
+
+def save_settings(data: Dict[str, Any], user_id: Optional[str] = None) -> Dict[str, Any]:
+    normalized = normalize_settings(data)
+    save_to_supabase = bool(user_id and supabase_account_settings_enabled())
+    if save_to_supabase:
+        try:
+            from supabase_auth import get_band_access_token, save_user_settings
+            if not normalized.get("band_access_token"):
+                existing_token = get_band_access_token(user_id)
+                if existing_token:
+                    normalized["band_access_token"] = existing_token
+            save_user_settings(user_id, normalized)
+        except Exception as exc:
+            add_log("ERROR", f"Supabase account settings save failed: {exc}", user_id)
+            raise
+    local_copy = dict(normalized)
+    if save_to_supabase:
+        local_copy["band_access_token"] = ""
+    save_local_settings_data(local_copy, user_id)
+    return normalized
+
+
+def get_all_enabled_settings() -> List[Dict[str, Any]]:
+    local_rows = get_local_settings_rows()
+    local_by_user = {str(row.get("user_id") or ""): row for row in local_rows}
+    if supabase_account_settings_enabled():
+        try:
+            from supabase_auth import get_all_user_settings
+            remote_rows = get_all_user_settings()
+            if remote_rows:
+                result: List[Dict[str, Any]] = []
+                for remote_row in remote_rows:
+                    remote = dict(remote_row)
+                    user_id = str(remote.pop("user_id", "") or "")
+                    merged = dict(local_by_user.get(user_id) or DEFAULT_SETTINGS)
+                    merged.update(remote)
+                    settings = normalize_settings(merged)
+                    if settings.get("enabled"):
+                        settings["user_id"] = user_id
+                        result.append(settings)
+                return result
+        except Exception as exc:
+            add_log("ERROR", f"Supabase account settings list failed: {exc}")
+    return [settings for settings in local_rows if settings.get("enabled")]
+
+
 def build_sequence(max_count: int, order: str) -> List[int]:
     seq = list(range(1, max_count + 1)); return seq if order == "asc" else list(reversed(seq))
 

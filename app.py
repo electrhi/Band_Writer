@@ -1,4 +1,5 @@
 import os
+import threading
 from datetime import timedelta
 from typing import List
 
@@ -48,7 +49,7 @@ def reload_scheduler_jobs() -> None:
                 hour, minute = [int(x) for x in hhmm.split(":")]
                 scheduler.add_job(
                     execute_schedule,
-                    CronTrigger(hour=hour, minute=minute, timezone=KST),
+                    CronTrigger(hour=hour, minute=minute, second=0, timezone=KST),
                     args=[hhmm, False, user_id],
                     id=f"band_post_{user_id or 'default'}_{hhmm}",
                     replace_existing=True,
